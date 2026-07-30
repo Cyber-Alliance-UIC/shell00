@@ -1,0 +1,79 @@
+name: shell00 grader
+
+# Runs automatically on every push and on pull requests. Students see the
+# result directly in the Actions tab of their own repository.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch: {}
+
+# Prevent overlapping runs from piling up when a student pushes fast fixes.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  grade:
+    name: Grade shell00
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout student repository
+        uses: actions/checkout@v4
+
+      - name: Verify grader integrity
+        # Protects against students editing grader/ to fake a pass. Compares
+        # the grader directory against a known-good hash published by
+        # mentors. Update GRADER_SHA256 whenever the grader is intentionally
+        # updated (see SECURITY.md).
+        env:
+          GRADER_SHA256: ${{ vars.GRADER_SHA256 }}
+        run: |
+          if [ -z "$GRADER_SHA256" ]; then
+            echo "::warning::GRADER_SHA256 repo variable not set — skipping integrity check."
+          else
+            ACTUAL_SHA256=$(find grader -type f -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}')
+            if [ "$ACTUAL_SHA256" != "$GRADER_SHA256" ]; then
+              echo "::error::grader/ directory has been modified. Expected $GRADER_SHA256, got $ACTUAL_SHA256."
+              exit 1
+            fi
+            echo "Grader integrity verified."
+          fi
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y --no-install-recommends coreutils
+
+      - name: Make scripts executable
+        run: |
+          chmod +x grader/run.sh
+          find starter -type f -name '*.sh' -exec chmod +x {} \; || true
+
+      - name: Run grader
+        id: grader
+        run: ./grader/run.sh
+        continue-on-error: true
+
+      - name: Publish result to job summary
+        if: always()
+        run: |
+          {
+            echo "### shell00 grading result"
+            echo ""
+            if [ "${{ steps.grader.outcome }}" = "success" ]; then
+              echo "✅ **PASS** — all exercises passed."
+            else
+              echo "❌ **FAIL** — see logs above for the exercise-by-exercise breakdown."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail the job if grading failed
+        if: steps.grader.outcome != 'success'
+        run: exit 1
